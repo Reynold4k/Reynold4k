@@ -1,3 +1,4 @@
+爱拼才会赢
 | Those who dare to struggle will succeed. |
 | Quien se esfuerza, gana. |
 | Qui ose lutter, gagne. |
