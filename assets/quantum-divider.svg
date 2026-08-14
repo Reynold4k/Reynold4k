@@ -1,0 +1,34 @@
+<svg width="1200" height="82" viewBox="0 0 1200 82" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">Animated quantum signal divider</title>
+  <defs>
+    <linearGradient id="line" x1="0" y1="0" x2="1200" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#06B6D4" stop-opacity="0"/>
+      <stop offset="0.18" stop-color="#06B6D4"/>
+      <stop offset="0.5" stop-color="#A78BFA"/>
+      <stop offset="0.82" stop-color="#FF3DCE"/>
+      <stop offset="1" stop-color="#FF3DCE" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="glow" x="-100%" y="-400%" width="300%" height="900%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <style>
+    .dash { stroke-dasharray: 5 15; animation: flow 2s linear infinite; }
+    .node { animation: pulse 2s ease-in-out infinite; }
+    .node:nth-of-type(2) { animation-delay:.45s; }
+    .node:nth-of-type(3) { animation-delay:.9s; }
+    @keyframes flow { to { stroke-dashoffset:-40; } }
+    @keyframes pulse { 0%,100% { opacity:.28; transform:scale(.72); } 50% { opacity:1; transform:scale(1); } }
+    @media (prefers-reduced-motion: reduce) { * { animation:none !important; } }
+  </style>
+  <path d="M0 41H398L420 19H496L518 41H682L704 63H780L802 41H1200" stroke="url(#line)" stroke-width="1.5" class="dash"/>
+  <path d="M0 41H398L420 19H496L518 41H682L704 63H780L802 41H1200" stroke="url(#line)" stroke-opacity="0.2" stroke-width="7" filter="url(#glow)"/>
+  <g filter="url(#glow)">
+    <circle class="node" cx="420" cy="19" r="4" fill="#67E8F9" style="transform-origin:420px 19px"/>
+    <circle class="node" cx="600" cy="41" r="5" fill="#A78BFA" style="transform-origin:600px 41px"/>
+    <circle class="node" cx="780" cy="63" r="4" fill="#FF3DCE" style="transform-origin:780px 63px"/>
+  </g>
+  <text x="600" y="16" fill="#64748B" font-size="9" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, monospace" letter-spacing="4">DEEP SPACE SIGNAL</text>
+</svg>
+
