@@ -1,4 +1,5 @@
 """Scene model: the strip, what hides what, and the walking ant (all in canvas coordinates)."""
+import functools
 import numpy as np, shapely
 from geom import Strip, Camera
 
@@ -7,9 +8,11 @@ TAU = 2 * np.pi
 # Camera, strip, canvas and motion. T is one full cycle = two laps (the ant is home again).
 P = dict(
     el=26.0, az=-90.0, dist=6.0, phi_deg=135.0, w=0.42,
-    W=1600, H=640, strip_h=450, cx=800, cy=322,
+    W=1600, H=720, strip_h=450, cx=800, cy=300,
     n_rulings=150, T=20.0, fps_body=10, fps_limbs=20, stride_hz=4.0, antenna_hz=1.25,
     ant_len=0.25, direction=1, u0_pi=1.5,
+    lane=-0.2,      # the ant's lateral position, as a fraction of the half-width (0 = centre line)
+    seam_pi=1.7,    # where the strip is glued: x = 0 ~ 1 in the quotient chart
 )
 
 
@@ -117,6 +120,17 @@ def strip_layers(sc, occ, n):
     return out
 
 
+def seam_runs(sc, occ, P):
+    """The ruling at the seam, split into visible / hidden runs."""
+    S, u = sc.S, np.pi * P["seam_pi"]
+    v = np.linspace(-S.w, S.w, 61)
+    xy, z = sc.proj(S.point(np.full_like(v, u), v))
+    hid = occ.hidden(xy, z, u)
+    cuts = np.flatnonzero(np.diff(hid.astype(int))) + 1
+    bounds = [0, *cuts, len(v)]
+    return [(bool(hid[a]), xy[max(a - 1, 0):b]) for a, b in zip(bounds[:-1], bounds[1:])]
+
+
 def membrane(sc, n):
     S, C = sc.S, sc.C
     u = np.arange(n) * TAU / n
@@ -149,7 +163,7 @@ TRIPOD_A = {(+1, 0), (-1, 1), (+1, 2)}
 
 def ant_local(t, P):
     """Leg + antenna polylines in local coords at time t (seconds)."""
-    v_bl = (4 * np.pi / P["T"]) / P["ant_len"]          # body lengths / s
+    v_bl = lane_table(P)[1][-1] / P["T"] / P["ant_len"]   # body lengths / s
     f = P["stride_hz"]; duty = 0.56
     stride = v_bl / f * duty
     legs = []
@@ -181,14 +195,55 @@ def ant_local(t, P):
     return legs, ants, bob
 
 
+@functools.lru_cache(None)
+def _lane_table(w, phi_deg, u0_pi, direction, lane):
+    """Parameter u and arc length s along the ant's lane over one full cycle (two laps)."""
+    S = Strip(w, np.radians(phi_deg))
+    us = np.pi * u0_pi + direction * np.linspace(0, 2 * TAU, 8001)
+    pts = S.point(us, np.full_like(us, lane * w))
+    return us, np.r_[0, np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))]
+
+
+def lane_table(P):
+    return _lane_table(P["w"], P["phi_deg"], P["u0_pi"], P["direction"], P["lane"])
+
+
 def ant_u(t, P):
-    return np.pi * P["u0_pi"] + P["direction"] * 2 * TAU * t / P["T"]
+    """Strip parameter of the ant at time t; it walks its lane at constant speed, two laps per period."""
+    us, s = lane_table(P)
+    n = np.floor(np.asarray(t, float) / P["T"])
+    frac = np.asarray(t, float) / P["T"] - n
+    return np.interp(frac * s[-1], s, us) + n * P["direction"] * 2 * TAU
+
+
+def chart(t, P):
+    """The ant's point (x, y) in the quotient chart [0,1] x [0,1] / (0,y) ~ (1,1-y), cut at the seam."""
+    a = P["direction"] * (ant_u(t, P) - np.pi * P["seam_pi"])
+    k = np.floor(a / TAU)
+    x = a / TAU - k
+    y = ((-1.0) ** k * P["lane"] + 1) / 2
+    return x, y
+
+
+def seam_times(P):
+    """Times in [0, T) at which the ant crosses the seam."""
+    us, s = lane_table(P)
+    d = P["direction"]
+    out = []
+    for k in range(-2, 4):
+        uc = np.pi * P["seam_pi"] + k * TAU
+        if (us[0] - uc) * (us[-1] - uc) < 0:
+            out.append(float(np.interp(uc * d, us * d, s) / s[-1] * P["T"]))
+    return sorted(t % P["T"] for t in out)
 
 
 def ant_frame(sc, u, P):
     S = sc.S
-    sgn = P["direction"]
-    O = S.center(np.array(u)); T = sgn * S.tangent(np.array(u)); N = S.normal(np.array(u))
+    c, h = P["lane"] * S.w, 1e-5
+    O = S.point(np.array(u), np.array(c))
+    T = P["direction"] * (S.point(np.array(u + h), np.array(c)) - S.point(np.array(u - h), np.array(c)))
+    T /= np.linalg.norm(T)
+    N = S.surface_normal(np.array(u), np.array(c))
     B = np.cross(N, T)
     return O, np.stack([T, B, N], 1)  # R: columns = local axes in world
 

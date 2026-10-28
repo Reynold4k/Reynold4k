@@ -1,12 +1,12 @@
 """Text -> SVG path data (HarfBuzz shaping + fontTools outlines), so the SVG needs no fonts."""
-import functools, io, pathlib, urllib.request
+import functools, hashlib, io, pathlib, urllib.request
 import uharfbuzz as hb
 from fontTools.ttLib import TTFont
 from fontTools.pens.svgPathPen import SVGPathPen
 from fontTools.pens.transformPen import TransformPen
 from fontTools.varLib import instancer
 
-CJK_TEXT = "周行而不殆"
+CJK_TEXT = "吾生也有涯而知无"
 FONT_DIR = pathlib.Path(__file__).resolve().parent / "fonts"      # git-ignored; fetched on first use
 CACHE = FONT_DIR / "_cache"
 SOURCES = {  # Google Fonts repository, SIL Open Font License
@@ -28,7 +28,8 @@ def _fetch(name):
 def _load(name, axes):
     """Static instance of `name` at `axes`, cached on disk; CJK fonts are subset first (they are huge)."""
     CACHE.mkdir(exist_ok=True)
-    key = CACHE / (name.replace("[", "_").replace("]", "_") + "".join(f"_{a}{v}" for a, v in axes) + ".ttf")
+    tag = "_" + hashlib.md5(CJK_TEXT.encode()).hexdigest()[:8] if name.startswith("NotoSerifSC") else ""
+    key = CACHE / (name.replace("[", "_").replace("]", "_") + "".join(f"_{a}{v}" for a, v in axes) + tag + ".ttf")
     if not key.exists():
         f = TTFont(_fetch(name))
         if name.startswith("NotoSerifSC"):
@@ -84,3 +85,9 @@ def vertical_cjk(text, name, size, x, y, axes=(), gap=0.25):
         parts.append(sp.getCommands())
         yy += size * (1 + gap)
     return "".join(parts), yy - y - size * gap
+
+
+def advance(ch, name, size, axes=()):
+    """Horizontal advance of one character (for monospace layouts)."""
+    tt, font, upem = _load(name, tuple(sorted(axes)))
+    return tt["hmtx"][tt.getBestCmap()[ord(ch)]][0] * size / upem

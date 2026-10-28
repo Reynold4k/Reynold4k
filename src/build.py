@@ -50,45 +50,104 @@ def unwrap180(th):
     return out
 
 
-def text_layer(th):
-    out = []
+def flash(base, hot, times, T, hold=1.1):
+    """SMIL colour animation: `base`, jumping to `hot` at each time in `times` and fading back over `hold` s."""
+    pts = [(0.0, base)]
+    for t in times:
+        pts += [(max(t - 0.02, 0) / T, base), (t / T, hot), (min(t + hold, T - 0.001) / T, base)]
+    pts += [(1.0, base)]
+    pts = sorted(set(pts))
+    return (f'<animate attributeName="fill" dur="{T:g}s" repeatCount="indefinite" calcMode="linear" '
+            f'values="{";".join(v for _, v in pts)}" keyTimes="{";".join(num(k, 100000) for k, _ in pts)}"/>')
+
+
+def formula(th, P, x0, y0, size=26, lead=42, anchor="start"):
+    """Two lines: the quotient that defines the strip, and the ant's live point in it.
+    Digits are odometer wheels that jump once per step of the ant (SMIL, calcMode=discrete)."""
     ink, acc = th["ink"], th["accent"]
-    T = lambda d, o, extra="": out.append(f'<path fill="{ink}" fill-opacity="{o}"{extra} d="{d}"/>')
-    # right: vertical inscription with provenance and a seal
-    size, gap = 46, 0.5
-    xi, yi = 1426, 160
-    d, h = glyphs.vertical_cjk("周行而不殆", CJK[0], size, xi, yi, axes=CJK[1], gap=gap)
-    T(d, th["text"])
-    d, w = glyphs.text_path("LAOZI · XXV", MONO[0], 15, 0, 0, axes=MONO[1], tracking=0.3)
-    T(d, th["text_dim"], f' transform="translate({xi + 44} {yi + 4}) rotate(90)"')
-    out.append(f'<rect x="{xi - 7}" y="{yi + h + 30}" width="14" height="14" fill="{acc}"/>')
-    # left: translation + definition
-    x0, y0 = 118, 438
-    d, w = glyphs.text_path("It goes round and round,", ITAL[0], 30, x0, y0, axes=ITAL[1])
-    T(d, th["text"])
-    d, w = glyphs.text_path("and never tires.", ITAL[0], 30, x0, y0 + 38, axes=ITAL[1])
-    T(d, th["text"])
-    d, w = glyphs.text_path("M = [0,1] × [0,1] / (0,y) ~ (1,1−y)", MONO[0], 16.5, x0, y0 + 88, axes=MONO[1], tracking=0.02)
-    T(d, th["text_dim"])
-    return out
+    T = P["T"]
+    adv = glyphs.advance("0", MONO[0], size, MONO[1])
+    line1 = "M = [0,1]² / (0,y) ~ (1,1−y)"
+    line2 = "(x, y) = (0.###, 0.#00)"
+    if anchor == "middle":
+        x1, x2 = x0 - len(line1) * adv / 2, x0 - len(line2) * adv / 2
+    else:
+        x1 = x2 = x0
+    defs, out = [], []
+    # line 1, with the identification flashing whenever the ant crosses the seam
+    cut = line1.index("(0,y)")
+    d, _ = glyphs.text_path(line1[:cut], MONO[0], size, x1, y0, axes=MONO[1])
+    out.append(f'<path fill="{ink}" fill-opacity="{th["text"]}" d="{d}"/>')
+    d, _ = glyphs.text_path(line1[cut:], MONO[0], size, x1 + cut * adv, y0, axes=MONO[1])
+    out.append(f'<path fill="{ink}" fill-opacity="{th["text"]}" d="{d}">{flash(ink, acc, model.seam_times(P), T)}</path>')
+    # line 2: static characters + wheels
+    y2 = y0 + lead
+    static = "".join(glyphs.text_path(ch, MONO[0], size, x2 + i * adv, y2, axes=MONO[1])[0]
+                     for i, ch in enumerate(line2) if ch not in "# ")
+    out.append(f'<path fill="{ink}" fill-opacity="{th["text_dim"]}" d="{static}"/>')
+    for k in range(10):
+        defs.append(f'<path id="dg{k}" d="{glyphs.text_path(str(k), MONO[0], size, 0, 0, axes=MONO[1])[0]}"/>')
+    n_steps = int(round(2 * P["stride_hz"] * T))
+    ts = np.arange(n_steps) * T / n_steps
+    xs, ys = model.chart(ts, P)
+    digits = [[int(f"{x:.3f}"[2 + j]) for x in np.minimum(xs, 0.9994)] for j in range(3)] + [[int(round(y * 10)) for y in ys]]
+    slots = [i for i, ch in enumerate(line2) if ch == "#"]
+    LH = 1.5 * size
+    for wid, (i, seq) in enumerate(zip(slots, digits)):
+        x = x2 + i * adv
+        defs.append(f'<clipPath id="w{wid}"><rect x="{num(x - 1, 10)}" y="{num(y2 - 0.95 * size, 10)}" width="{num(adv + 2, 10)}" height="{num(1.25 * size, 10)}"/></clipPath>')
+        keep = [0] + [k for k in range(1, n_steps) if seq[k] != seq[k - 1]]
+        vals = ";".join(f"{num(x, 10)},{num(y2 - seq[k] * LH, 10)}" for k in keep)
+        kts = ";".join(num(k / n_steps, 100000) for k in keep)
+        stack = "".join(f'<use href="#dg{k}" xlink:href="#dg{k}" y="{num(k * LH, 10)}"/>' for k in range(10))
+        out.append(f'<g clip-path="url(#w{wid})"><g fill="{acc}" transform="translate({num(x, 10)} {num(y2 - seq[0] * LH, 10)})">'
+                   f'<animateTransform attributeName="transform" type="translate" calcMode="discrete" dur="{T:g}s" repeatCount="indefinite" values="{vals}" keyTimes="{kts}"/>'
+                   f'{stack}</g></g>')
+    return defs, out
+
+
+def text_layer(th, P):
+    defs, out = [], []
+    ink, acc = th["ink"], th["accent"]
+    Tx = lambda d, o, extra="": out.append(f'<path fill="{ink}" fill-opacity="{o}"{extra} d="{d}"/>')
+    W, H = P["W"], P["H"]
+    # right: Zhuangzi in two columns, read right to left, provenance beside, seal after the last column
+    size, gap, col = 46, 0.5, 74
+    xr = W - 174
+    yi = 150
+    d, h = glyphs.vertical_cjk("吾生也有涯", CJK[0], size, xr, yi, axes=CJK[1], gap=gap)
+    Tx(d, th["text"])
+    d, _ = glyphs.vertical_cjk("而知也无涯", CJK[0], size, xr - col, yi, axes=CJK[1], gap=gap)
+    Tx(d, th["text"])
+    d, _ = glyphs.text_path("ZHUANGZI · III", MONO[0], 15, 0, 0, axes=MONO[1], tracking=0.3)
+    Tx(d, th["text_dim"], f' transform="translate({xr + 44} {yi + 4}) rotate(90)"')
+    out.append(f'<rect x="{xr - col - 7}" y="{yi + h + 30}" width="14" height="14" fill="{acc}"/>')
+    # translation (bottom left) and the live formula (centred under the strip) share two baselines
+    base, lead = H - 104, 42
+    d, _ = glyphs.text_path("My life has a limit,", ITAL[0], 30, 118, base, axes=ITAL[1]); Tx(d, th["text"])
+    d, _ = glyphs.text_path("but knowledge has none.", ITAL[0], 30, 118, base + lead, axes=ITAL[1]); Tx(d, th["text"])
+    fx, fy, anchor = P["cx"], base, "middle"
+    fd, fo = formula(th, P, fx, fy, size=28, lead=lead, anchor=anchor)
+    return defs + fd, out + fo
 
 
 def trail_track(sc, occ, P, dim_level, back=0.40, du=0.02, fps=10):
-    """Centre-line polyline from (u0 - back lap) to (u0 + 2 laps), its browser arc length, and the
+    """The ant's lane from (u0 - back lap) to (u0 + 2 laps) as a polyline, its browser arc length, and the
     dash-offset / dimming animations that keep the trail's head on the ant."""
     S, T, d = sc.S, P["T"], P["direction"]
     u0 = np.pi * P["u0_pi"]
     us = u0 + d * np.arange(-back * TAU, 2 * TAU + 1e-9, du)
-    xy, z = sc.proj(S.center(us))
+    c = np.full_like(us, P["lane"] * S.w)
+    xy, z = sc.proj(S.point(us, c))
     q = np.round(xy * 2) / 2                                  # exactly what poly() writes
     s = np.r_[0, np.cumsum(np.linalg.norm(np.diff(q, axis=0), axis=1))]
     lap = s[np.searchsorted(us * d, (u0 + d * TAU) * d)] - s[np.searchsorted(us * d, u0 * d)]
     Lmax = 0.36 * lap
-    facing = (S.normal(us) * sc.C.view_dir(S.center(us))).sum(-1) > 0
+    facing = (S.surface_normal(us, c) * sc.C.view_dir(S.point(us, c))).sum(-1) > 0
     bright = facing & ~occ.hidden(xy, z, us % TAU)
     K = int(T * fps)
     ts = np.arange(K + 1) * T / K
-    i_ant = (back * TAU + 4 * np.pi * ts / T) / du
+    i_ant = (d * (model.ant_u(ts, P) - u0) + back * TAU) / du
     s_ant = np.interp(i_ant, np.arange(len(s)), s)
     off = Lmax - s_ant
     # trail brightness = opacity-weighted share of its samples on the visible face
@@ -117,7 +176,7 @@ def build(theme, P):
     A = out.append
     A(f'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 {W} {H}" width="{W}" height="{H}" fill="none" role="img" aria-labelledby="t d">')
     A('<title id="t">An ant running forever on a Möbius strip</title>')
-    A('<desc id="d">A single ant walks the centre line of a Möbius strip. After one lap it is on the other face; after two it is home. 周行而不殆: it goes round and round, and never tires (Laozi, 25).</desc>')
+    A('<desc id="d">An ant walks a Möbius strip. After one lap it is on the other face; after two it is home. Its point in the quotient [0,1]² / (0,y) ~ (1,1−y) is shown live. 吾生也有涯，而知也无涯: my life has a limit, but knowledge has none (Zhuangzi, 3).</desc>')
     A('<defs><filter id="blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="1.6"/></filter></defs>')
 
     # membrane (fresnel fill)
@@ -141,6 +200,14 @@ def build(theme, P):
             for o, runs in sorted(buckets.items()):
                 d = "".join(poly(r) for r in runs)
                 A(f'<path stroke="{th["ink"]}" stroke-opacity="{o:.3f}" stroke-width="{width}" stroke-linecap="round" stroke-linejoin="round" d="{d}"/>')
+
+    # the seam where the strip is glued (x = 0 ~ 1 in the chart); it flashes when the ant crosses it
+    seam = [(h, pts) for h, pts in model.seam_runs(sc, occ, P)]
+    st = model.seam_times(P)
+    for h, pts in seam:
+        o = 0.22 if h else 0.75
+        A(f'<path fill="none" stroke="{th["ink"]}" stroke-opacity="{o}" stroke-width="1.4" stroke-dasharray="5 6" d="{poly(pts)}">'
+          + flash(th["ink"], th["accent"], st, T).replace('attributeName="fill"', 'attributeName="stroke"') + "</path>")
 
     # trail + wake: one centre-line track, dashed so that only the stretch just behind the ant is drawn;
     # a single SMIL stroke-dashoffset animation (inherited) drives every layer.
@@ -218,15 +285,21 @@ def build(theme, P):
     A(f'<use href="#ant" xlink:href="#ant" fill="{th["accent"]}" stroke="{th["accent"]}" opacity="{vals[0]}">'
       + f'<animate attributeName="opacity" dur="{T:g}s" repeatCount="indefinite" values="{vt}" keyTimes="{kts}"/>' + "</use>")
 
-    out += text_layer(th)
+    tdefs, tout = text_layer(th, P)
+    out += ["<defs>" + "".join(tdefs) + "</defs>"] + tout
     A("</svg>")
     return "\n".join(out)
 
 
 if __name__ == "__main__":
-    assets = pathlib.Path(__file__).resolve().parent.parent / "assets"
+    import argparse, json
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--outdir", default=str(pathlib.Path(__file__).resolve().parent.parent / "assets"))
+    ap.add_argument("--set", default="{}", help="JSON overrides for model.P")
+    a = ap.parse_args()
+    PP = dict(P, **json.loads(a.set))
     for theme in THEMES:
-        svg = build(theme, P)
-        f = assets / f"mobius-ant-{theme}.svg"
+        svg = build(theme, PP)
+        f = pathlib.Path(a.outdir) / f"mobius-ant-{theme}.svg"
         f.write_text(svg, encoding="utf-8")
         print(f, len(svg.encode()) // 1024, "KB")
